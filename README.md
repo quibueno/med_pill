@@ -35,7 +35,7 @@ Some changes to the original design were necessary to meet the new design needs.
 The piece has 21 compartments for pills, which can be administered once, twice or three times a day, according to the schedule to be made.
 
 
-# 2. Aplicativos e Webhooks.
+# 2. Apps and Webhooks.
 
        • Telegram ( @botfather ) ;
 
