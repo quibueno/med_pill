@@ -14,3 +14,5 @@ Reed switch module - Qtd:01
 Neodinio Magnet - Qtd:03
 
 Skate Bearings - Qtd:02
+
+Screws - Qtd: 03
