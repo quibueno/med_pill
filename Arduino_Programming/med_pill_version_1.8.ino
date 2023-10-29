@@ -21,6 +21,8 @@ You should have received a copy of the GNU General Public License
 along with the Arduino Med_Pill Library.  If not, see
 <http://www.gnu.org/licenses/>.
 */
+
+
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -32,133 +34,169 @@ along with the Arduino Med_Pill Library.  If not, see
 #include <UniversalTelegramBot.h>
 
 const int stepsPerRevolution = 768;
-Stepper myStepper(stepsPerRevolution, 19, 5, 18, 17);
+const int numDeliveryTimes = 3;
+const int maxStringLength = 50;  // Define a maximum string length for char arrays
 
-String medicationDeliveryTimes[3];
+Stepper myStepper(stepsPerRevolution, 19, 5, 18, 17);
+char medicationDeliveryTimes[numDeliveryTimes][maxStringLength];
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
-
 AsyncWebServer server(80);
 DNSServer dns;
-
 int lastDeliveredMinute = -1;
-
 Preferences preferences;
-
 WiFiClientSecure client;
+unsigned long previousMillis = 0;
+const long interval = 1000;  // Interval to check the time (1 second)
 
 void setup() {
-  Serial.begin(115200);
-
-  // Configuração do WiFi
-  WiFi.mode(WIFI_STA);
-  AsyncWiFiManager wifiManager(&server, &dns);
-  wifiManager.setAPCallback(configModeCallback);
-  wifiManager.autoConnect("Dispenser_AP");
-
-  // Configuração do NTP
-  timeClient.begin();
-  timeClient.setTimeOffset(-10800);
-
-  // Configuração do motor
-  myStepper.setSpeed(10);
-
-  // Carregar horários da memória não volátil
-  preferences.begin("deliveryTimes", false);
-  for (int i = 0; i < 3; i++) {
-    medicationDeliveryTimes[i] = preferences.getString(String(i).c_str(), "06:59:00");
-  }
-  preferences.end();
-
-  // Configuração do servidor
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    preferences.begin("deliveryTimes", false);
-    String botToken = preferences.getString("botToken", "");
-    String chatId = preferences.getString("chatId", "");
-    preferences.end();
-
-    String html = "<html><body><form action='/setTimes' method='POST'>";
-    html += "Bot Token: <input type='text' name='botToken' value='" + botToken + "'><br>";
-    html += "Chat ID: <input type='text' name='chatId' value='" + chatId + "'><br>";
-    html += "Horario 1: <input type='text' name='t1' value='" + medicationDeliveryTimes[0] + "'><br>";
-    html += "Horario 2: <input type='text' name='t2' value='" + medicationDeliveryTimes[1] + "'><br>";
-    html += "Horario 3: <input type='text' name='t3' value='" + medicationDeliveryTimes[2] + "'><br>";
-    html += "<input type='submit' value='Salvar'></form></body></html>";
-    request->send(200, "text/html", html);
-  });
-
-  server.on("/setTimes", HTTP_POST, [](AsyncWebServerRequest *request) {
-    if (request->hasParam("t1", true) && request->hasParam("t2", true) && request->hasParam("t3", true) &&
-        request->hasParam("botToken", true) && request->hasParam("chatId", true)) {
-      medicationDeliveryTimes[0] = request->getParam("t1", true)->value();
-      medicationDeliveryTimes[1] = request->getParam("t2", true)->value();
-      medicationDeliveryTimes[2] = request->getParam("t3", true)->value();
-
-            // Salvar horários, BOT_TOKEN e CHAT_ID na memória não volátil
-      preferences.begin("deliveryTimes", false);
-      for (int i = 0; i < 3; i++) {
-        preferences.putString(String(i).c_str(), medicationDeliveryTimes[i]);
-      }
-      preferences.putString("botToken", request->getParam("botToken", true)->value());
-      preferences.putString("chatId", request->getParam("chatId", true)->value());
-      preferences.end();
-
-      request->send(200, "text/plain", "Horários atualizados");
-    } else {
-      request->send(400, "text/plain", "Parâmetros inválidos");
-    }
-  });
-
-  server.begin();
+    Serial.begin(115200);
+    setupWiFi();
+    setupNTP();
+    setupMotor();
+    loadDeliveryTimesFromMemory();
+    setupWebServer();
 }
 
 void loop() {
-  timeClient.update();
-  String currentTime = timeClient.getFormattedTime();
-  int currentMinute = timeClient.getMinutes();
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= interval) {
+        previousMillis = currentMillis;
+        timeClient.update();
 
-  for (int i = 0; i < 3; i++) {
-    if (currentTime == medicationDeliveryTimes[i] && currentMinute != lastDeliveredMinute) {
-      deliverMedication();
-      lastDeliveredMinute = currentMinute;
+        char currentTime[maxStringLength];
+        strcpy(currentTime, timeClient.getFormattedTime().c_str());
+        int currentMinute = timeClient.getMinutes();
+
+        for (int i = 0; i < numDeliveryTimes; i++) {
+            if (strcmp(currentTime, medicationDeliveryTimes[i]) == 0 && currentMinute != lastDeliveredMinute) {
+                deliverMedication();
+                lastDeliveredMinute = currentMinute;
+            }
+        }
     }
-  }
+}
 
-  delay(1000);
+void setupWiFi() {
+    WiFi.mode(WIFI_STA);
+    AsyncWiFiManager wifiManager(&server, &dns);
+    wifiManager.setAPCallback(configModeCallback);
+    wifiManager.autoConnect("Dispenser_AP");
+}
+
+void setupNTP() {
+    timeClient.begin();
+    timeClient.setTimeOffset(-10800);
+}
+
+void setupMotor() {
+    myStepper.setSpeed(10);
+}
+
+void loadDeliveryTimesFromMemory() {
+    preferences.begin("deliveryTimes", false);
+    for (int i = 0; i < numDeliveryTimes; i++) {
+        strcpy(medicationDeliveryTimes[i], preferences.getString(String(i).c_str(), "06:59:00").c_str());
+    }
+    preferences.end();
+}
+
+void setupWebServer() {
+    server.on("/", HTTP_GET, handleRootRequest);
+    server.on("/setTimes", HTTP_POST, handleSetTimesRequest);
+    server.begin();
+}
+
+void handleRootRequest(AsyncWebServerRequest *request) {
+    char botToken[maxStringLength];
+    strcpy(botToken, getPreference("botToken", "").c_str());
+
+    char chatId[maxStringLength];
+    strcpy(chatId, getPreference("chatId", "").c_str());
+
+    String html = generateHtmlPage(botToken, chatId);
+    request->send(200, "text/html", html);
+}
+
+String generateHtmlPage(const char* botToken, const char* chatId) {
+    String html = "<html><body><form action='/setTimes' method='POST'>";
+    html += "Bot Token: <input type='text' name='botToken' value='" + String(botToken) + "'><br>";
+    html += "Chat ID: <input type='text' name='chatId' value='" + String(chatId) + "'><br>";
+
+    for (int i = 0; i < numDeliveryTimes; i++) {
+        html += "Horario " + String(i+1) + ": <input type='text' name='t" + String(i+1) + "' value='" + String(medicationDeliveryTimes[i]) + "'><br>";
+    }
+
+    html += "<input type='submit' value='Salvar'></form></body></html>";
+    return html;
+}
+
+void handleSetTimesRequest(AsyncWebServerRequest *request) {
+    if (validRequestParameters(request)) {
+        for (int i = 0; i < numDeliveryTimes; i++) {
+            strcpy(medicationDeliveryTimes[i], request->getParam("t" + String(i+1), true)->value().c_str());
+            setPreference(String(i).c_str(), medicationDeliveryTimes[i]);
+        }
+        setPreference("botToken", request->getParam("botToken", true)->value().c_str());
+    } else {
+        request->send(400, "text/plain", "Parâmetros inválidos");
+    }
+}
+
+bool validRequestParameters(AsyncWebServerRequest *request) {
+    for (int i = 1; i <= numDeliveryTimes; i++) {
+        if (!request->hasParam("t" + String(i), true)) {
+            return false;
+        }
+    }
+    return request->hasParam("botToken", true);
 }
 
 void deliverMedication() {
-  myStepper.step(stepsPerRevolution);
-  delay(2000);
-  myStepper.step(-stepsPerRevolution);
-  sendTelegramMessage("Medicamento entregue");
+    myStepper.step(stepsPerRevolution);
+    delay(2000);  // Consider reducing or eliminating this delay.
+    myStepper.step(-stepsPerRevolution);
+    sendTelegramMessage("Medicamento entregue");
 }
 
-void sendTelegramMessage(const String &message) {
-  preferences.begin("deliveryTimes", false);
-  String botToken = preferences.getString("botToken", "");
-  String chatId = preferences.getString("chatId", "");
-  preferences.end();
+void sendTelegramMessage(const char *message) {
+    char botToken[maxStringLength];
+    strcpy(botToken, getPreference("botToken", "").c_str());
 
-  if (botToken == "" || chatId == "") {
-    Serial.println("Bot Token ou Chat ID não configurados");
-    return;
-  }
+    char chatId[maxStringLength];
+    strcpy(chatId, getPreference("chatId", "").c_str());
 
-  UniversalTelegramBot bot(botToken, client);
+    if (strlen(botToken) == 0 || strlen(chatId) == 0) {
+        Serial.println("Bot Token ou Chat ID não configurados");
+        return;
+    }
 
-  if (bot.sendSimpleMessage(chatId, message, "Markdown")) {
-    Serial.println("Mensagem enviada com sucesso");
-  } else {
-    Serial.println("Falha ao enviar a mensagem");
-  }
+    UniversalTelegramBot bot(botToken, client);
+    if (bot.sendSimpleMessage(chatId, message, "Markdown")) {
+        Serial.println("Mensagem enviada com sucesso");
+    } else {
+        Serial.println("Falha ao enviar a mensagem");
+    }
+}
+
+String getPreference(const char* key, const String& defaultValue) {
+    preferences.begin("deliveryTimes", false);
+    String value = preferences.getString(key, defaultValue);
+    preferences.end();
+    return value;
+}
+
+void setPreference(const char* key, const char* value) {
+    preferences.begin("deliveryTimes", false);
+    preferences.putString(key, value);
+    preferences.end();
 }
 
 void configModeCallback(AsyncWiFiManager *myWiFiManager) {
-  Serial.println("Entrou no modo de configuração");
-  Serial.println(WiFi.softAPIP());
-  Serial.println(myWiFiManager->getConfigPortalSSID());
+    Serial.println("Entrou no modo de configuração");
+    Serial.println(WiFi.softAPIP());
+    Serial.println(myWiFiManager->getConfigPortalSSID());
 }
 
 
