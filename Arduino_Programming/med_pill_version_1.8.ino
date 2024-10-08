@@ -22,7 +22,6 @@ along with the Arduino Med_Pill Library.  If not, see
 <http://www.gnu.org/licenses/>.
 */
 
-
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -35,20 +34,20 @@ along with the Arduino Med_Pill Library.  If not, see
 
 const int stepsPerRevolution = 768;
 const int numDeliveryTimes = 3;
-const int maxStringLength = 50;  // Define a maximum string length for char arrays
 
 Stepper myStepper(stepsPerRevolution, 19, 5, 18, 17);
-char medicationDeliveryTimes[numDeliveryTimes][maxStringLength];
+String medicationDeliveryTimes[numDeliveryTimes];
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
 AsyncWebServer server(80);
 DNSServer dns;
-int lastDeliveredMinute = -1;
 Preferences preferences;
 WiFiClientSecure client;
+
 unsigned long previousMillis = 0;
 const long interval = 1000;  // Interval to check the time (1 second)
+int lastDeliveredMinute = -1;
 
 void setup() {
     Serial.begin(115200);
@@ -65,12 +64,11 @@ void loop() {
         previousMillis = currentMillis;
         timeClient.update();
 
-        char currentTime[maxStringLength];
-        strcpy(currentTime, timeClient.getFormattedTime().c_str());
+        String currentTime = timeClient.getFormattedTime();
         int currentMinute = timeClient.getMinutes();
 
         for (int i = 0; i < numDeliveryTimes; i++) {
-            if (strcmp(currentTime, medicationDeliveryTimes[i]) == 0 && currentMinute != lastDeliveredMinute) {
+            if (currentTime == medicationDeliveryTimes[i] && currentMinute != lastDeliveredMinute) {
                 deliverMedication();
                 lastDeliveredMinute = currentMinute;
             }
@@ -97,7 +95,7 @@ void setupMotor() {
 void loadDeliveryTimesFromMemory() {
     preferences.begin("deliveryTimes", false);
     for (int i = 0; i < numDeliveryTimes; i++) {
-        strcpy(medicationDeliveryTimes[i], preferences.getString(String(i).c_str(), "06:59:00").c_str());
+        medicationDeliveryTimes[i] = preferences.getString(String(i), "06:59:00");
     }
     preferences.end();
 }
@@ -109,23 +107,20 @@ void setupWebServer() {
 }
 
 void handleRootRequest(AsyncWebServerRequest *request) {
-    char botToken[maxStringLength];
-    strcpy(botToken, getPreference("botToken", "").c_str());
-
-    char chatId[maxStringLength];
-    strcpy(chatId, getPreference("chatId", "").c_str());
+    String botToken = getPreference("botToken", "");
+    String chatId = getPreference("chatId", "");
 
     String html = generateHtmlPage(botToken, chatId);
     request->send(200, "text/html", html);
 }
 
-String generateHtmlPage(const char* botToken, const char* chatId) {
+String generateHtmlPage(const String &botToken, const String &chatId) {
     String html = "<html><body><form action='/setTimes' method='POST'>";
-    html += "Bot Token: <input type='text' name='botToken' value='" + String(botToken) + "'><br>";
-    html += "Chat ID: <input type='text' name='chatId' value='" + String(chatId) + "'><br>";
+    html += "Bot Token: <input type='text' name='botToken' value='" + botToken + "'><br>";
+    html += "Chat ID: <input type='text' name='chatId' value='" + chatId + "'><br>";
 
     for (int i = 0; i < numDeliveryTimes; i++) {
-        html += "Horario " + String(i+1) + ": <input type='text' name='t" + String(i+1) + "' value='" + String(medicationDeliveryTimes[i]) + "'><br>";
+        html += "Horario " + String(i + 1) + ": <input type='text' name='t" + String(i + 1) + "' value='" + medicationDeliveryTimes[i] + "'><br>";
     }
 
     html += "<input type='submit' value='Salvar'></form></body></html>";
@@ -135,10 +130,11 @@ String generateHtmlPage(const char* botToken, const char* chatId) {
 void handleSetTimesRequest(AsyncWebServerRequest *request) {
     if (validRequestParameters(request)) {
         for (int i = 0; i < numDeliveryTimes; i++) {
-            strcpy(medicationDeliveryTimes[i], request->getParam("t" + String(i+1), true)->value().c_str());
-            setPreference(String(i).c_str(), medicationDeliveryTimes[i]);
+            medicationDeliveryTimes[i] = request->getParam("t" + String(i + 1), true)->value();
+            setPreference(String(i), medicationDeliveryTimes[i]);
         }
-        setPreference("botToken", request->getParam("botToken", true)->value().c_str());
+        setPreference("botToken", request->getParam("botToken", true)->value());
+        request->send(200, "text/plain", "Horários atualizados com sucesso");
     } else {
         request->send(400, "text/plain", "Parâmetros inválidos");
     }
@@ -160,14 +156,11 @@ void deliverMedication() {
     sendTelegramMessage("Medicamento entregue");
 }
 
-void sendTelegramMessage(const char *message) {
-    char botToken[maxStringLength];
-    strcpy(botToken, getPreference("botToken", "").c_str());
+void sendTelegramMessage(const String &message) {
+    String botToken = getPreference("botToken", "");
+    String chatId = getPreference("chatId", "");
 
-    char chatId[maxStringLength];
-    strcpy(chatId, getPreference("chatId", "").c_str());
-
-    if (strlen(botToken) == 0 || strlen(chatId) == 0) {
+    if (botToken.isEmpty() || chatId.isEmpty()) {
         Serial.println("Bot Token ou Chat ID não configurados");
         return;
     }
@@ -180,14 +173,14 @@ void sendTelegramMessage(const char *message) {
     }
 }
 
-String getPreference(const char* key, const String& defaultValue) {
+String getPreference(const String &key, const String &defaultValue) {
     preferences.begin("deliveryTimes", false);
     String value = preferences.getString(key, defaultValue);
     preferences.end();
     return value;
 }
 
-void setPreference(const char* key, const char* value) {
+void setPreference(const String &key, const String &value) {
     preferences.begin("deliveryTimes", false);
     preferences.putString(key, value);
     preferences.end();
