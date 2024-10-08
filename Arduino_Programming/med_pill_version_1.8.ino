@@ -21,7 +21,6 @@ You should have received a copy of the GNU General Public License
 along with the Arduino Med_Pill Library.  If not, see
 <http://www.gnu.org/licenses/>.
 */
-
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -31,6 +30,9 @@ along with the Arduino Med_Pill Library.  If not, see
 #include <Stepper.h>
 #include <Preferences.h>
 #include <UniversalTelegramBot.h>
+
+#define RESET_BUTTON_PIN 0 // Pino GPIO ao qual o botão está conectado
+#define RESET_HOLD_TIME 20000  // Tempo de espera para resetar (20 segundos)
 
 const int stepsPerRevolution = 768;
 const int numDeliveryTimes = 3;
@@ -49,8 +51,16 @@ unsigned long previousMillis = 0;
 const long interval = 1000;  // Interval to check the time (1 second)
 int lastDeliveredMinute = -1;
 
+unsigned long buttonPressedTime = 0;  // Marca o momento em que o botão foi pressionado
+bool buttonHeld = false;  // Estado para verificar se o botão está sendo mantido pressionado
+
 void setup() {
     Serial.begin(115200);
+
+    // Configura o pino do botão como entrada com resistor pull-up
+    pinMode(RESET_BUTTON_PIN, INPUT_PULLUP);
+
+    // Chama outras funções de configuração
     setupWiFi();
     setupNTP();
     setupMotor();
@@ -59,6 +69,37 @@ void setup() {
 }
 
 void loop() {
+    // Verifica o estado do botão
+    if (digitalRead(RESET_BUTTON_PIN) == LOW) {
+        // Se o botão está pressionado e ainda não foi iniciado o contador
+        if (!buttonHeld) {
+            buttonHeld = true;
+            buttonPressedTime = millis();  // Armazena o momento em que o botão foi pressionado
+        }
+
+        // Se o botão está pressionado e o tempo de espera foi atingido
+        if (buttonHeld && (millis() - buttonPressedTime >= RESET_HOLD_TIME)) {
+            Serial.println("Resetando configurações...");
+
+            // Limpa todas as preferências armazenadas
+            preferences.begin("deliveryTimes", false);
+            preferences.clear();
+            preferences.end();
+
+            // Reseta as configurações de WiFi
+            AsyncWiFiManager wifiManager(&server, &dns);
+            wifiManager.resetSettings();
+
+            // Reinicia o dispositivo para aplicar as mudanças
+            delay(1000);  // Aguarda um pouco para garantir a limpeza dos dados
+            ESP.restart();
+        }
+    } else {
+        // Se o botão não está pressionado, reseta o estado
+        buttonHeld = false;
+    }
+
+    // Continuação do loop principal
     unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= interval) {
         previousMillis = currentMillis;
@@ -151,7 +192,7 @@ bool validRequestParameters(AsyncWebServerRequest *request) {
 
 void deliverMedication() {
     myStepper.step(stepsPerRevolution);
-    delay(2000);  // Consider reducing or eliminating this delay.
+    delay(2000);  // Considere reduzir ou eliminar este delay.
     myStepper.step(-stepsPerRevolution);
     sendTelegramMessage("Medicamento entregue");
 }
@@ -191,7 +232,6 @@ void configModeCallback(AsyncWiFiManager *myWiFiManager) {
     Serial.println(WiFi.softAPIP());
     Serial.println(myWiFiManager->getConfigPortalSSID());
 }
-
 
 
 /* Neste código, um portal cativo é criado quando o ESP32 é iniciado, permitindo que o usuário se conecte à rede "Dispenser_AP" e acesse o servidor web no ESP32. A página inicial do servidor web exibe um formulário para inserir os horários de entrega de medicamentos.
